@@ -1,0 +1,114 @@
+# =============================================================================
+# NexusFlow Configuration
+# All tunable parameters live here. Secrets (DB password, etc.) go in .env.
+# =============================================================================
+
+project:
+  name: nexusflow
+  random_seed: 42
+  mode: sample          # sample | full  (overridden by --mode CLI flag)
+
+dataset:
+  name: "Cainiao LaDe / LaDe-D"
+  source_url: "https://huggingface.co/datasets/Cainiao-AI/LaDe"
+  raw_dir: "data/raw"
+  interim_dir: "data/interim"
+  processed_dir: "data/processed"
+  features_dir: "data/features"
+  samples_dir: "data/samples"
+  # Cities actually documented in the LaDe README (Section 15 of spec).
+  # sh=Shanghai, hz=Hangzhou, cq=Chongqing, jl=Jilin, yt=Yantai
+  cities:
+    develop: ["sh"]
+    validate: ["hz", "cq"]
+    additional: ["jl", "yt"]
+  time_range:
+    start: "2022-05-01"
+    end: "2022-10-31"
+
+splits:
+  # Chronological split boundaries (fractions of the sorted time range).
+  # Do NOT randomly shuffle across these boundaries (Section 15 / 35).
+  train_frac: 0.70
+  validation_frac: 0.15
+  test_frac: 0.15
+  cross_city:
+    train_cities: ["sh", "hz"]
+    test_cities: ["cq"]
+
+risk_label:
+  # Section 20: excessive delivery-duration risk, NOT an SLA violation
+  # unless a genuine promised_time field is confirmed present in the data.
+  method: "training_percentile"
+  percentile: 90
+  name: "excessive_duration_risk"
+  disclaimer: >
+    This is an operational excessive-duration risk label, learned from the
+    90th percentile of delivery duration in the TRAINING split only. It is
+    NOT a customer SLA violation label unless a genuine promised-time field
+    is confirmed to exist in the source data.
+
+congestion:
+  # Section 23: trajectory-derived congestion index, never "live traffic".
+  free_flow_speed_percentile: 90
+  time_bucket_minutes: 30
+  clip_min: 0.0
+  clip_max: 1.0
+
+sequential_mining:
+  algorithm: "prefixspan"
+  baseline_algorithm: "spade"
+  min_support: 0.01
+  max_pattern_length: 6
+  sequence_unit: "delivery"   # documented in Section 25 — one sequence per delivery task
+
+spatial:
+  grid_cell_size_km: 1.0
+  hotspot_method: "dbscan"     # grid | dbscan
+  dbscan_eps_km: 0.5
+  dbscan_min_samples: 15
+
+spatial_risk_weights:
+  historical_risk_rate: 0.35
+  congestion: 0.25
+  delivery_density: 0.20
+  pattern_risk: 0.20
+
+pattern_risk_formula:
+  # pattern_risk_score = support_rate * risk_rate * normalized_excess_duration
+  components: ["support_rate", "risk_rate", "normalized_excess_duration"]
+
+models:
+  baseline: ["logistic_regression", "random_forest"]
+  primary: "lightgbm"
+  comparison: ["xgboost"]
+  classification_metrics: ["precision", "recall", "f1", "roc_auc", "pr_auc"]
+
+decision_engine:
+  reroute_risk_threshold: 0.70
+  reassign_workload_margin: 0.30
+  priority_levels: ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+route_optimization:
+  weights:
+    distance: 1.0
+    duration: 1.0
+    predicted_risk_penalty: 2.0
+    pattern_risk_penalty: 1.5
+    workload_penalty: 1.0
+
+database:
+  name: "nexusflow_db"
+  schemas: ["raw", "analytics", "ml", "decision", "experiments"]
+  # actual connection string / credentials come from .env (DATABASE_URL)
+
+sample_mode:
+  # FAST MODE — documented deterministic sample for development.
+  n_deliveries: 5000
+  n_couriers: 200
+  random_seed: 42
+
+dashboard:
+  title: "NexusFlow — Last-Mile Delivery Decision Support"
+  default_city: "sh"
+  cache_ttl_seconds: 300

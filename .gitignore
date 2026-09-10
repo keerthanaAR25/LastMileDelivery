@@ -1,0 +1,71 @@
+# Secrets
+.env
+
+# Data (never commit raw/interim/processed data — too large, and licensed)
+data/raw/**
+data/interim/**
+data/processed/**
+data/features/**
+data/external/**
+!data/raw/**/README.md
+!data/samples/**
+
+# Models and artifacts (large binary outputs)
+models/baseline/*
+models/final/*
+models/explainers/*
+!models/**/.gitkeep
+artifacts/**/*
+!artifacts/**/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# MLflow
+mlruns/
+
+# OS
+.DS_Store
+
+# Reports (generated, not source)
+reports/data_report/*
+reports/experiment_results/*
+reports/tables/*
+reports/figures/*
+!reports/**/README.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# Large datasets
+data/raw/
+data/processed/
+data/features/
+
+# Large generated artifacts
+artifacts/
+models/
+reports/
+
+# PostgreSQL/local files
+*.sql
+*.dump
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs
+*.log

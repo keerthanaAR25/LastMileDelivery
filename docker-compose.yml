@@ -1,0 +1,61 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: nexusflow_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-nexusflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-nexusflow_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/02_schema.sql:ro
+      - ./database/indexes.sql:/docker-entrypoint-initdb.d/03_indexes.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexusflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  streamlit:
+    build: .
+    container_name: nexusflow_streamlit
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-nexusflow}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-nexusflow_db}
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./artifacts:/app/artifacts
+      - ./config.yaml:/app/config.yaml:ro
+
+  # Optional FastAPI service layer (Section 78). Not required for the core
+  # research pipeline — enable by uncommenting once the core app works.
+  # api:
+  #   build: .
+  #   container_name: nexusflow_api
+  #   command: ["uvicorn", "app.services.api:app", "--host", "0.0.0.0", "--port", "8000"]
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-nexusflow}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-nexusflow_db}
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ./models:/app/models
+  #     - ./artifacts:/app/artifacts
+
+volumes:
+  pgdata:
