@@ -3,13 +3,25 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.services import data_access as svc  # noqa: E402
 from app.services.city_context import get_selected_city  # noqa: E402
-
+from app.services.physical_route import (  # noqa: E402
+    find_route,
+    load_road_graph,
+    route_coordinates,
+    sample_route_endpoints,
+)
+from app.services.physical_route import (
+    find_route,
+    load_road_graph,
+    route_coordinates,
+    sample_route_endpoints,
+)
 
 # ============================================================
 # PAGE CONFIG
@@ -17,7 +29,7 @@ from app.services.city_context import get_selected_city  # noqa: E402
 
 st.set_page_config(
     page_title="NexusFlow - Route Simulation",
-    layout="wide"
+    layout="wide",
 )
 
 
@@ -28,10 +40,13 @@ st.set_page_config(
 st.header("Route / Intervention Simulation")
 
 city_code = get_selected_city()
+
 city_name = svc.CITY_CODE_TO_NAME.get(
     city_code,
-    city_code
+    city_code,
 )
+
+st.caption(f"City: {city_name}")
 
 
 # ============================================================
@@ -52,13 +67,10 @@ if city_code not in svc.CITIES_WITH_FULL_PIPELINE:
 # ============================================================
 
 st.info(
-    "PHYSICAL REROUTE simulation is not yet implemented. "
-    "The road network is available in PostgreSQL/PostGIS, but the current "
-    "decision engine does not yet generate an alternative road path and "
-    "rescore that path. The simulations shown here are REASSIGN_COURIER "
-    "and RESCHEDULE scenarios, where the trained model re-scores the "
-    "delivery using an alternative courier profile or a different "
-    "accept hour."
+    "NexusFlow provides two complementary simulation capabilities: "
+    "model-based intervention scenarios using REASSIGN_COURIER and "
+    "RESCHEDULE, and a physical road-based route simulation using "
+    "the real provided road network."
 )
 
 
@@ -91,257 +103,233 @@ except FileNotFoundError:
 if sims.empty:
 
     st.warning(
-        f"No simulation artifact was found for {city_name}."
-    )
-
-    st.stop()
-
-
-# ============================================================
-# CLEAN SIMULATION DATA
-# ============================================================
-
-required_columns = [
-    "simulation_kind",
-    "order_id",
-    "baseline_risk",
-    "alternative_risk",
-    "risk_delta",
-]
-
-missing_columns = [
-    column
-    for column in required_columns
-    if column not in sims.columns
-]
-
-if missing_columns:
-
-    st.error(
-        "Simulation artifact is missing required columns: "
-        + ", ".join(missing_columns)
-    )
-
-    st.stop()
-
-
-sims = sims.copy()
-
-
-# ============================================================
-# SIMULATION TYPE
-# ============================================================
-
-simulation_types = (
-    sims["simulation_kind"]
-    .dropna()
-    .astype(str)
-    .unique()
-    .tolist()
-)
-
-
-if not simulation_types:
-
-    st.warning(
-        f"No simulation types are available for {city_name}."
-    )
-
-    st.stop()
-
-
-kind = st.selectbox(
-    "Simulation type",
-    options=simulation_types
-)
-
-
-subset = sims[
-    sims["simulation_kind"].astype(str) == kind
-].copy()
-
-
-if subset.empty:
-
-    st.warning(
-        f"No {kind} simulations are available for {city_name}."
-    )
-
-    st.stop()
-
-
-# ============================================================
-# SUMMARY METRICS
-# ============================================================
-
-c1, c2, c3 = st.columns(3)
-
-
-c1.metric(
-    "Simulations",
-    f"{len(subset):,}"
-)
-
-
-mean_delta = subset["risk_delta"].mean()
-
-c2.metric(
-    "Mean Risk Delta",
-    f"{mean_delta:+.1%}"
-)
-
-
-risk_reduction_rate = (
-    subset["risk_delta"] < 0
-).mean()
-
-
-c3.metric(
-    "% Reducing Risk",
-    f"{risk_reduction_rate:.0%}"
-)
-
-
-# ============================================================
-# INTERPRETATION
-# ============================================================
-
-if kind == "REASSIGN_COURIER":
-
-    st.warning(
-        "Interpretive caveat: this effect is computed by the actual "
-        "trained model, but it is substantially mechanical. "
-        "courier_risk_rate_train is a target-encoded historical feature, "
-        "so replacing the courier statistics with a lower-risk courier "
-        "profile will generally reduce the predicted risk. "
-        "This is a MODEL-BASED SCENARIO, not validated proof that "
-        "reassignment causally reduces delivery risk."
-    )
-
-elif kind == "RESCHEDULE":
-
-    st.caption(
-        "Model-based finding: rescheduling produces very small changes "
-        "in predicted risk in the available simulations. This represents "
-        "the model's counterfactual response to changing the accept hour; "
-        "it should not be interpreted as a causal effect."
-    )
-
-
-# ============================================================
-# RISK DELTA DISTRIBUTION
-# ============================================================
-
-st.subheader(
-    f"Risk Delta Distribution — {kind}"
-)
-
-
-fig = px.histogram(
-    subset,
-    x="risk_delta",
-    nbins=40,
-    title=f"Distribution of Risk Delta — {kind}"
-)
-
-
-fig.update_layout(
-    xaxis_title="Risk Delta",
-    yaxis_title="Number of Simulations"
-)
-
-
-st.plotly_chart(
-    fig,
-    use_container_width=True
-)
-
-
-# ============================================================
-# DELIVERY-LEVEL INSPECTION
-# ============================================================
-
-st.subheader(
-    "Inspect One Delivery"
-)
-
-
-order_options = (
-    subset["order_id"]
-    .dropna()
-    .tolist()
-)
-
-
-if not order_options:
-
-    st.info(
-        "No delivery IDs are available for inspection."
+        f"No intervention simulation artifact was found for {city_name}."
     )
 
 else:
 
-    order_id = st.selectbox(
-        "Select delivery",
-        options=order_options
-    )
+    # ========================================================
+    # CLEAN SIMULATION DATA
+    # ========================================================
 
+    required_columns = [
+        "simulation_kind",
+        "order_id",
+        "baseline_risk",
+        "alternative_risk",
+        "risk_delta",
+    ]
 
-    row = subset[
-        subset["order_id"] == order_id
-    ].iloc[0]
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in sims.columns
+    ]
 
+    if missing_columns:
 
-    # --------------------------------------------------------
-    # DELIVERY RISK COMPARISON
-    # --------------------------------------------------------
-
-    c1, c2, c3 = st.columns(3)
-
-
-    c1.metric(
-        "Baseline Risk",
-        f"{float(row['baseline_risk']):.1%}"
-    )
-
-
-    c2.metric(
-        "Alternative Risk",
-        f"{float(row['alternative_risk']):.1%}"
-    )
-
-
-    c3.metric(
-        "Delta",
-        f"{float(row['risk_delta']):+.1%}"
-    )
-
-
-    # --------------------------------------------------------
-    # SIMULATION LABEL
-    # --------------------------------------------------------
-
-    if "label" in row.index:
-
-        st.caption(
-            f"Label: {row['label']}"
+        st.error(
+            "Simulation artifact is missing required columns: "
+            + ", ".join(missing_columns)
         )
 
+        st.stop()
 
-# ============================================================
-# METHODOLOGICAL NOTE
-# ============================================================
+    sims = sims.copy()
 
-st.subheader(
-    "Simulation Interpretation"
-)
+    # ========================================================
+    # SIMULATION TYPE
+    # ========================================================
 
-st.write(
-    f"""
+    simulation_types = (
+        sims["simulation_kind"]
+        .dropna()
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    if not simulation_types:
+
+        st.warning(
+            f"No intervention simulation types are available for {city_name}."
+        )
+
+    else:
+
+        kind = st.selectbox(
+            "Simulation type",
+            options=simulation_types,
+        )
+
+        subset = sims[
+            sims["simulation_kind"].astype(str) == kind
+        ].copy()
+
+        if subset.empty:
+
+            st.warning(
+                f"No {kind} simulations are available for {city_name}."
+            )
+
+        else:
+
+            # ====================================================
+            # SUMMARY METRICS
+            # ====================================================
+
+            c1, c2, c3 = st.columns(3)
+
+            c1.metric(
+                "Simulations",
+                f"{len(subset):,}",
+            )
+
+            mean_delta = subset["risk_delta"].mean()
+
+            c2.metric(
+                "Mean Risk Delta",
+                f"{mean_delta:+.1%}",
+            )
+
+            risk_reduction_rate = (
+                subset["risk_delta"] < 0
+            ).mean()
+
+            c3.metric(
+                "% Reducing Risk",
+                f"{risk_reduction_rate:.0%}",
+            )
+
+            # ====================================================
+            # INTERPRETATION
+            # ====================================================
+
+            if kind == "REASSIGN_COURIER":
+
+                st.warning(
+                    "Interpretive caveat: this effect is computed by "
+                    "the actual trained model, but it is substantially "
+                    "mechanical. courier_risk_rate_train is a "
+                    "target-encoded historical feature, so replacing "
+                    "the courier statistics with a lower-risk courier "
+                    "profile will generally reduce the predicted risk. "
+                    "This is a MODEL-BASED SCENARIO, not validated proof "
+                    "that reassignment causally reduces delivery risk."
+                )
+
+            elif kind == "RESCHEDULE":
+
+                st.caption(
+                    "Model-based finding: rescheduling produces very "
+                    "small changes in predicted risk in the available "
+                    "simulations. This represents the model's "
+                    "counterfactual response to changing the accept "
+                    "hour; it should not be interpreted as a causal effect."
+                )
+
+            # ====================================================
+            # RISK DELTA DISTRIBUTION
+            # ====================================================
+
+            st.subheader(
+                f"Risk Delta Distribution — {kind}"
+            )
+
+            fig = px.histogram(
+                subset,
+                x="risk_delta",
+                nbins=40,
+                title=f"Distribution of Risk Delta — {kind}",
+            )
+
+            fig.update_layout(
+                xaxis_title="Risk Delta",
+                yaxis_title="Number of Simulations",
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+            )
+
+            # ====================================================
+            # DELIVERY-LEVEL INSPECTION
+            # ====================================================
+
+            st.subheader(
+                "Inspect One Delivery"
+            )
+
+            order_options = (
+                subset["order_id"]
+                .dropna()
+                .tolist()
+            )
+
+            if not order_options:
+
+                st.info(
+                    "No delivery IDs are available for inspection."
+                )
+
+            else:
+
+                order_id = st.selectbox(
+                    "Select delivery",
+                    options=order_options,
+                )
+
+                row = subset[
+                    subset["order_id"] == order_id
+                ].iloc[0]
+
+                # ------------------------------------------------
+                # DELIVERY RISK COMPARISON
+                # ------------------------------------------------
+
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric(
+                    "Baseline Risk",
+                    f"{float(row['baseline_risk']):.1%}",
+                )
+
+                c2.metric(
+                    "Alternative Risk",
+                    f"{float(row['alternative_risk']):.1%}",
+                )
+
+                c3.metric(
+                    "Delta",
+                    f"{float(row['risk_delta']):+.1%}",
+                )
+
+                # ------------------------------------------------
+                # SIMULATION LABEL
+                # ------------------------------------------------
+
+                if "label" in row.index:
+
+                    st.caption(
+                        f"Label: {row['label']}"
+                    )
+
+            # ====================================================
+            # METHODOLOGICAL NOTE
+            # ====================================================
+
+            st.subheader(
+                "Simulation Interpretation"
+            )
+
+            st.write(
+                f"""
 The results above are generated from the NexusFlow decision-support
 pipeline for **{city_name}**.
 
 The current implementation evaluates model-based intervention scenarios.
+
 REASSIGN_COURIER changes the courier-related historical statistics used
 by the trained model, while RESCHEDULE changes the delivery acceptance
 hour used for rescoring.
@@ -349,9 +337,278 @@ hour used for rescoring.
 These simulations estimate how the model's predicted risk changes under
 the specified scenario. They do not establish a causal effect or
 guarantee an operational saving.
-
-The PostgreSQL/PostGIS road network is available, but physical
-alternative-path generation and route rescoring are not yet connected
-to this page.
 """
+            )
+
+
+# ============================================================
+# PHYSICAL ROAD-BASED ROUTE SIMULATION
+# ============================================================
+
+st.divider()
+
+st.subheader(
+    "Physical Road-Based Route Simulation"
 )
+
+st.caption(
+    "Calculates a shortest-distance route over the real road network "
+    f"for {city_name}. This is a model-based route simulation, "
+    "not live navigation."
+)
+
+
+# ============================================================
+# LOAD ROAD GRAPH
+# ============================================================
+
+@st.cache_resource(
+    show_spinner="Building the real road network..."
+)
+def get_route_graph(code):
+
+    return load_road_graph(code)
+
+
+G = get_route_graph(
+    city_code
+)
+
+
+# ============================================================
+# ROAD GRAPH CHECK
+# ============================================================
+
+if G.number_of_nodes() == 0:
+
+    st.warning(
+        f"No usable road network is available for {city_name}."
+    )
+
+else:
+
+    st.info(
+        f"Connected road network: "
+        f"{G.number_of_nodes():,} nodes and "
+        f"{G.number_of_edges():,} road links."
+    )
+
+    # ========================================================
+    # DEFAULT CONNECTED LOCATIONS
+    # ========================================================
+
+    default_start, default_end = sample_route_endpoints(
+        G
+    )
+
+    if (
+        default_start is None
+        or default_end is None
+    ):
+
+        st.warning(
+            "The road network does not contain enough connected "
+            "nodes for route simulation."
+        )
+
+    else:
+
+        # ====================================================
+        # ROUTE INPUTS
+        # ====================================================
+
+        st.markdown(
+            "**Select Start and Destination Coordinates**"
+        )
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+
+            st.markdown(
+                "Start Location"
+            )
+
+            start_lon = st.number_input(
+                "Start Longitude",
+                value=float(default_start[0]),
+                format="%.6f",
+                key="physical_start_lon",
+            )
+
+            start_lat = st.number_input(
+                "Start Latitude",
+                value=float(default_start[1]),
+                format="%.6f",
+                key="physical_start_lat",
+            )
+
+        with c2:
+
+            st.markdown(
+                "Destination"
+            )
+
+            end_lon = st.number_input(
+                "Destination Longitude",
+                value=float(default_end[0]),
+                format="%.6f",
+                key="physical_end_lon",
+            )
+
+            end_lat = st.number_input(
+                "Destination Latitude",
+                value=float(default_end[1]),
+                format="%.6f",
+                key="physical_end_lat",
+            )
+
+        # ====================================================
+        # CALCULATE ROUTE
+        # ====================================================
+
+        if st.button(
+            "Calculate Physical Route",
+            type="primary",
+            key="calculate_physical_route",
+        ):
+
+            route, distance_km, snapped_start, snapped_end = find_route(
+                G,
+                start_lon,
+                start_lat,
+                end_lon,
+                end_lat,
+            )
+
+            if route is None:
+
+                st.warning(
+                    "No connected route was found. "
+                    "Try coordinates closer to the displayed "
+                    "road network."
+                )
+
+            else:
+
+                coordinates = route_coordinates(
+                    G,
+                    route,
+                )
+
+                # =================================================
+                # SUCCESS
+                # =================================================
+
+                st.success(
+                    f"Physical route found — approximately "
+                    f"{distance_km:.2f} km."
+                )
+
+                # =================================================
+                # ROUTE METRICS
+                # =================================================
+
+                m1, m2, m3 = st.columns(3)
+
+                m1.metric(
+                    "Route Distance",
+                    f"{distance_km:.2f} km",
+                )
+
+                m2.metric(
+                    "Road Nodes",
+                    f"{len(route):,}",
+                )
+
+                m3.metric(
+                    "Road Links",
+                    f"{max(len(route) - 1, 0):,}",
+                )
+
+                # =================================================
+                # ROUTE MAP
+                # =================================================
+
+                st.subheader(
+                    "Physical Route Map"
+                )
+
+                route_fig = go.Figure()
+
+                if coordinates:
+
+                    route_fig.add_trace(
+                        go.Scattergeo(
+                            lon=[
+                                point[0]
+                                for point in coordinates
+                            ],
+                            lat=[
+                                point[1]
+                                for point in coordinates
+                            ],
+                            mode="lines",
+                            line=dict(
+                                width=4
+                            ),
+                            name="Physical Route",
+                        )
+                    )
+
+                # Start and destination markers
+
+                route_fig.add_trace(
+                    go.Scattergeo(
+                        lon=[
+                            snapped_start[0],
+                            snapped_end[0],
+                        ],
+                        lat=[
+                            snapped_start[1],
+                            snapped_end[1],
+                        ],
+                        mode="markers",
+                        marker=dict(
+                            size=9
+                        ),
+                        name="Route Endpoints",
+                    )
+                )
+
+                route_fig.update_layout(
+                    height=650,
+                    margin=dict(
+                        l=0,
+                        r=0,
+                        t=30,
+                        b=0,
+                    ),
+                    geo=dict(
+                        projection_type="mercator",
+                        fitbounds="locations",
+                        showland=True,
+                        showcountries=True,
+                        showcoastlines=True,
+                        showlakes=True,
+                        showrivers=True,
+                        showocean=True,
+                    ),
+                )
+
+                st.plotly_chart(
+                    route_fig,
+                    use_container_width=True,
+                )
+
+                # =================================================
+                # METHODOLOGICAL NOTE
+                # =================================================
+
+                st.caption(
+                    "The selected coordinates are snapped to the "
+                    "nearest node in the connected road network. "
+                    "The displayed path follows the stored road "
+                    "geometries. Live traffic, turn restrictions, "
+                    "and real-time rerouting are not modeled."
+                )
